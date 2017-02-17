@@ -14,8 +14,8 @@ from contextlib import closing
 from Cookie import SimpleCookie
 
 from xiami_downloader import __version__
-from xiami_downloader.adapters import get_downloader
-from xiami_downloader.utils import query_yes_no, sanitize_filename
+from adapters import get_downloader
+from utils import query_yes_no, sanitize_filename
 
 # ID3 tags support depends on Mutagen
 try:
@@ -27,7 +27,7 @@ except:
     sys.stderr.write("No mutagen available. ID3 tags won't be written.\n")
 
 
-URL_PATTERN_ID = 'http://www.xiami.com/song/playlist/id/%d'
+URL_PATTERN_ID = 'http://www.xiami.com/song/playlist/id/%s'
 URL_PATTERN_SONG = URL_PATTERN_ID + '/object_name/default/object_id/0/cat/json'
 URL_PATTERN_ALBUM = URL_PATTERN_ID + '/type/1/cat/json'
 URL_PATTERN_PLAYLIST = URL_PATTERN_ID + '/type/3/cat/json'
@@ -122,7 +122,7 @@ def create_song(raw):
     parser = HTMLParser.HTMLParser()
 
     song = Song()
-    song.title = parser.unescape(raw['title'])
+    song.title = parser.unescape(raw['name'])
     song.artist = parser.unescape(raw['artist'])
     song.album_name = parser.unescape(raw['album_name'])
     song.song_id = raw['song_id']
@@ -194,7 +194,7 @@ def parse_arguments():
                         type=int, nargs='+')
     parser.add_argument('-a', '--album', action='append',
                         help='adds all songs in the albums for download',
-                        type=int, nargs='+')
+                        nargs='+')
     parser.add_argument('-p', '--playlist', action='append',
                         help='adds all songs in the playlists for download',
                         type=int, nargs='+')
@@ -210,6 +210,13 @@ def parse_arguments():
                         help='Vip account email')
     parser.add_argument('-pw', '--password', default='',
                         help='Vip account password')
+
+#add high quality argument
+    parser.add_argument('-hq', '--high_quality', action='store_true',
+                        help='high quality')
+#add song file argument
+    parser.add_argument('-sf', '--song-file', default='',
+                        help='song file')
 
     return parser.parse_args()
 
@@ -412,9 +419,90 @@ def add_id3_tag(filename, song, no_lrc_timetag):
     # which breaks utf-8, so no good solution for win-os.
     musicfile.save()
 
+#add song file support
+def find_config(file):
+        config_path = file
+        if os.path.exists(config_path):
+            return config_path
+        config_path = os.path.join(os.path.dirname(__file__), '../', file)
+        print config_path
+        if os.path.exists(config_path):
+            return config_path
+        return None
+
+def getid(line):
+    id = re.findall(r'/([^\/]*)\?', line)[0]
+    return id
+
+def deallines(f):
+    albumssec, songssec, playlistssec = 'albums', 'songs', 'playlists'
+    albums, songs, playlists = [], [], []
+    mode = None
+    
+    for line in f.readlines():
+        line = line.strip()
+        try:
+            if line == '': 
+                continue
+            if line[0] == '[' :
+                if line.find(albumssec) > 0:
+                    print line.find(albumssec)
+                    print line, albumssec
+                    mode = albumssec
+                    continue
+                elif line.find(songssec) > 0:
+                    print line, songssec
+                    mode = songssec
+                    continue
+                elif line.find(playlistssec) > 0:
+                    mode = playlistssec
+                    continue
+                else:
+                    print line + 'unexpect error' 
+            else:
+                print line
+                if mode == albumssec:
+                    albums.append(getid(line))
+                    continue
+                elif mode == songssec:
+                    songs.append(getid(line))
+                    continue
+                elif mode == playlistssec:
+                    playlists.append(getid(line))
+                else:
+                    print line + 'unexpect error'
+        except Exception, e:
+            print line + 'error'
+            print Exception
+            print 'e.message:\t', e.message 
+            continue
+    return {'albums':albums, 'songs':songs, 'playlists':playlists}
+
+def parser_song_file(args):
+    if args.song_file:
+        file = find_config(args.song_file)
+        with open(file, 'r') as f:
+            result = deallines(f)
+
+        if args.album:
+            args.album.append(result['albums'])
+        else: args.album = [result['albums']]
+        print args.album
+        if args.song:
+            args.song.addpend(result['songs'])
+        else: args.song = [result['songs']]
+        
+        if args.playlist:
+            args.playlists.append(result['playlists'])
+        else: args.playlist = [result['playlists']]
+        print result
+#add song file support
 
 def main():
     args = parse_arguments()
+    print args
+#add song file support
+    parser_song_file(args)
 
     xiami = XiamiDownloader(args)
 
@@ -427,10 +515,14 @@ def main():
         urls.extend(build_url_list(URL_PATTERN_ALBUM, args.album))
     if args.playlist:
         urls.extend(build_url_list(URL_PATTERN_PLAYLIST, args.playlist))
+    print urls
 
     vip_mode = args.username and args.password
     if vip_mode:
         HEADERS['Cookie'] = vip_login(args.username, args.password)
+
+#add high quality with vip mode
+    high_quality = args.high_quality
 
     # parse playlist for a list of track info
     songs = [
@@ -439,12 +531,12 @@ def main():
         for song in get_songs(playlist_url)
     ]
 
-    if vip_mode:
+    if vip_mode or high_quality:
         for song in songs:
             song.location = vip_location(song.song_id)
 
     println('%d file(s) to download' % len(songs))
-
+    
     tagging_enabled = mutagen and (not args.no_tag)
     xiami.download_songs(songs, tagging_enabled)
 
